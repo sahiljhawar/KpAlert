@@ -25,14 +25,28 @@ from pathlib import Path
 from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
-import markdown
 import numpy as np
 import pandas as pd
 import requests
 import typer
 from dotenv import load_dotenv
+from jinja2 import Template
 
 from src.config import MonitorConfig
+
+EMAIL_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "kp_alert_email.html.j2"
+
+LEVEL_NAMES = {
+    "G1": "Minor Storm",
+    "G2": "Moderate Storm",
+    "G3": "Strong Storm",
+    "G4": "Severe Storm",
+    "G5": "Extreme Storm",
+}
+
+# Maps the level strings returned by get_status_level_color() onto the
+# codes used by the Geomagnetic Activity Scale table in the email template.
+ACTIVITY_CODE_MAP = {"MODERATE": "ACTIVE"}
 
 # Display times in utc (Europe/Berlin handles utc/CEST)
 ETC = ZoneInfo("Europe/Berlin")
@@ -378,19 +392,6 @@ class KpMonitor:
                 storm_prob_df=storm_prob_df,
             )
 
-    def footer(self) -> str:
-        return f"""
-*This is an automated alert from the Kp Index Monitoring System using GFZ Space Weather Forecast.*
-
----
-
-<small>
-© {datetime.now().year} GFZ Helmholtz Centre for Geosciences | GFZ Helmholtz-Zentrum für Geoforschung  
-The data/data products are provided "as-is" without warranty of any kind either expressed or implied, including but not limited to the implied warranties of merchantability, correctness and fitness for a particular purpose. The entire risk as to the quality and performance of the Data/data products is with the Licensee.
-In no event will GFZ be liable for any damages direct, indirect, incidental, or consequential, including damages for any lost profits, lost savings, or other incidental or consequential damages arising out of the use or inability to use the data/data products.
-</small>
-            """
-
     def _kp_html_table(self, record: pd.DataFrame, probabilities: pd.DataFrame) -> str:
         """Generate markdown table for Kp index records."""
         table = f"""
@@ -419,36 +420,6 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
 <a id="fn3"></a><sup>3</sup> Median Kp Index: Median value of Kp Ensembles  
 <a id="fn4"></a><sup>4</sup> Geomagnetic Activity Level based on Min-Max range
 """
-        return table
-
-    def _storm_probability_table(self, storm_prob_df: pd.DataFrame) -> str:
-        """Generate markdown table for storm probabilities (Kp 6-7, 7-8, >=8)."""
-        if storm_prob_df.empty:
-            return None
-
-        filtered_rows = []
-        for idx, row in storm_prob_df.iterrows():
-            total_prob = row["prob 6-7"] + row["prob 7-8"] + row["prob >= 8"]
-            if total_prob > 0.50:
-                filtered_rows.append((idx, row))
-
-        if not filtered_rows:
-            return None
-
-        table = """
-## STORM PROBABILITY FORECAST (Kp ≥ 6)
-
-| Time (UTC) | Probability of kp 6-7 | Probability of kp 7-8 | Probability of kp ≥8 |
-|------------|----------|----------|---------|
-"""
-        for idx, row in filtered_rows:
-            time_utc = idx.tz_convert(UTC).strftime("%d.%m.%Y %H:%M")
-            prob_6_7 = f"{row['prob 6-7'] * 100:.0f}%"
-            prob_7_8 = f"{row['prob 7-8'] * 100:.0f}%"
-            prob_8_plus = f"{row['prob >= 8'] * 100:.0f}%"
-            table += f"| {time_utc} | {prob_6_7} | {prob_7_8} | {prob_8_plus} |\n"
-
-        table += "\n*Showing timestamps where combined probability of Kp ≥ 6 exceeds 50%*\n"
         return table
 
     def get_observed_kp(self, start: pd.Timestamp) -> Tuple[str, float] | None:
@@ -520,9 +491,9 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
             self.logger.error(f"ffmpeg GIF conversion failed: {e.stderr.decode()}")
             return None
 
-    def create_message(self, analysis: AnalysisResults) -> str:
+    def create_message(self, analysis: AnalysisResults) -> tuple[dict, float]:
         """
-        Create formatted alert message for high Kp conditions using Markdown.
+        Build the Jinja2 rendering context for the alert email.
 
         Parameters
         ----------
@@ -531,8 +502,10 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
 
         Returns
         -------
-        message : str
-            Formatted Markdown alert message
+        context : dict
+            Context to render `kp_alert_email.html.j2` with
+        prob_at_start_time : float
+            Probability at `start_time`, also needed by `create_subject`
         """
         high_records = analysis["high_kp_records"]
         probability_df = analysis["probability_df"]
@@ -581,61 +554,70 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
             message_prefix = (
                 f"""From {start_utc.strftime("%H:%M (UTC) %d.%m.%Y")}  to {end_utc.strftime("%H:%M (UTC) %d.%m.%Y")}"""
             )
-        if observed_time != analysis.next_24h_forecast.index[0]:
-            obs_utc = datetime.strptime(observed_time.strip(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-            obs_message_prefix = (
-                f""" (Observed Kp available up to {obs_utc.astimezone(utc).strftime("%H:%M (UTC) %d.%m.%Y")})"""
-            )
-        else:
-            obs_message_prefix = ""
-
         # Use "=" for Kp 9 (maximum value), "≥" for all other values
         kp_comparison = "=" if max_kp_at_finite_time == 9 else "≥"
 
-        message = f"""<h2 style="color: #d9534f;">SPACE WEATHER ALERT - {end_time_kp_max_status} ({max_kp_at_finite_time_level}) with probability ≥ {prob_at_start_time * 100:.0f}% predicted</h2>
+        level_code = max_kp_at_finite_time_level
+        level_name = LEVEL_NAMES.get(level_code, level_code)
 
+        headline = (
+            f"Geomagnetic activity may reach {level_name} conditions "
+            f"(Kp {kp_comparison} {DECIMAL_TO_KP[max_kp_at_finite_time]})"
+        )
+        lede = (
+            f"{message_prefix}, activity may reach {end_time_kp_max_status} with Kp {kp_comparison} "
+            f"{DECIMAL_TO_KP[max_kp_at_finite_time]}, probability ≥ {prob_at_start_time * 100:.0f}%."
+        )
 
-### {message_prefix}, Geomagnetic Activity can reach {end_time_kp_max_status} with Kp {kp_comparison} {DECIMAL_TO_KP[max_kp_at_finite_time]} with probability ≥ {prob_at_start_time * 100:.0f}%.
+        if observed_time is not None:
+            obs_utc = datetime.strptime(observed_time.strip(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            obs_time_str = obs_utc.astimezone(utc).strftime("%H:%M (UTC) %d.%m.%Y")
+        else:
+            obs_time_str = "N/A"
 
-**Current Conditions:** {observed_status.replace("CONDITIONS", "")} {obs_message_prefix}
+        current_conditions = f"{observed_status.replace('CONDITIONS', '').strip()} at {obs_time_str}"
 
-**Alert sent at:** {datetime.now(timezone.utc).astimezone(utc).strftime("%H:%M (UTC) %d.%m.%Y ")}
+        storm_rows = []
+        for idx, row in analysis["storm_prob_df"].iterrows():
+            total_prob = row["prob 6-7"] + row["prob 7-8"] + row["prob >= 8"]
+            if total_prob > 0.50:
+                storm_rows.append(
+                    {
+                        "time": idx.tz_convert(UTC).strftime("%d.%m.%Y %H:%M"),
+                        "p67": f"{row['prob 6-7'] * 100:.0f}%",
+                        "p78": f"{row['prob 7-8'] * 100:.0f}%",
+                        "p8": f"{row['prob >= 8'] * 100:.0f}%",
+                    }
+                )
 
-![Forecast Image](cid:forecast_image)
+        include_aurora_watch = self.should_include_aurora_watch(high_records)
+        activity_current_code = ACTIVITY_CODE_MAP.get(threshold_level, threshold_level)
 
-<p class="forecast-caption">{self.FORECAST_IMAGE_CAPTION}</p>
+        context = {
+            "issued": datetime.now(timezone.utc).strftime("%H:%M UTC, %d %b %Y"),
+            "level_code": level_code,
+            "level_name": level_name,
+            "headline": headline,
+            "lede": lede,
+            "current_conditions": current_conditions,
+            "forecast_caption": self.FORECAST_IMAGE_CAPTION,
+            "storm_rows": storm_rows,
+            "activity_current_code": activity_current_code,
+            "aurora": {
+                "show": include_aurora_watch,
+                "note": (
+                    f"Kp ≥ {DECIMAL_TO_KP[self.AURORA_KP]} indicate potential auroral activity at Berlin "
+                    "latitudes. Time indicated in UTC."
+                ),
+            },
+            "year": datetime.now().year,
+        }
 
+        return context, prob_at_start_time
 
-"""
-        # Add storm probability table if there are rows with combined prob > 50%
-        storm_table = self._storm_probability_table(analysis["storm_prob_df"])
-        if storm_table:
-            message += storm_table
-            message += "\n"
-
-        # First add the geomagnetic activity scale section
-        message += """## GEOMAGNETIC ACTIVITY SCALE"""
-        message += self.get_storm_level_description_table()
-        message += "\n"
-
-        # Then optionally add the aurora watch section
-        if self.should_include_aurora_watch(high_records):
-            message += f"""
-## **AURORA WATCH:**
-
-<div class="aurora-watch-row">
-  <div class="aurora-col">
-    <img src="cid:aurora_vid" alt="Kp-dependent Auroral Intensity Prediction" class="aurora-forecast-img" />
-  </div>
-</div>
-
-**Note:** Kp ≥ {DECIMAL_TO_KP[self.AURORA_KP]} indicate potential auroral activity at Berlin latitudes. Time indicated in UTC.
-
-"""
-
-        message += self.footer()
-
-        return message.strip(), prob_at_start_time
+    def render_html_message(self, context: dict) -> str:
+        """Render the alert email HTML from `kp_alert_email.html.j2` using `context`."""
+        return Template(EMAIL_TEMPLATE_PATH.read_text()).render(**context)
 
     def create_subject(self, analysis: AnalysisResults, prob_at_start_time: float) -> str:
         """
@@ -656,33 +638,6 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
 
         subject = f"Alert: {status_max} predicted with probability ≥ {prob_at_start_time * 100:.0f}%."
         return subject.strip()
-
-    def get_storm_level_description_table(self) -> str:
-        """Generate markdown table for geomagnetic storm levels."""
-        G1 = "[NOAA [G1]](https://www.swpc.noaa.gov/noaa-scales-explanation#:~:text=G%201)"
-        G2 = "[NOAA [G2]](https://www.swpc.noaa.gov/noaa-scales-explanation#:~:text=G%202)"
-        G3 = "[NOAA [G3]](https://www.swpc.noaa.gov/noaa-scales-explanation#:~:text=G%203)"
-        G4 = "[NOAA [G4]](https://www.swpc.noaa.gov/noaa-scales-explanation#:~:text=G%204)"
-        G5 = "[NOAA [G5]](https://www.swpc.noaa.gov/noaa-scales-explanation#:~:text=G%205)"
-
-        rows = [
-            ("Quiet", "0-3", "Quiet conditions"),
-            ("Active", "4", "Moderate geomagnetic activity"),
-            ("Minor Storm (G1)", "5", f"Weak power grid fluctuations. For more details see {G1}"),
-            ("Moderate Storm (G2)", "6", f"High-latitude power systems affected. For more details see {G2}"),
-            ("Strong Storm (G3)", "7", f"Power systems may need voltage corrections. For more details see {G3}"),
-            ("Severe Storm (G4)", "8", f"Possible widespread voltage control problems. For more details see {G4}"),
-            ("Extreme Storm (G5)", "9", f"Widespread power system voltage control problems. For more details see {G5}"),
-        ]
-
-        table = """
-| Level | Kp Value | Description |
-|-------|----------|-------------|
-"""
-        for level, kp_value, desc in rows:
-            table += f"| **{level}** | **{kp_value}** | {desc} |\n"
-
-        return table
 
     def get_status_level_color(self, kp: float) -> tuple[str, str, str]:
         """Get geomagnetic status, level, and color based on Kp value.
@@ -811,10 +766,11 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
         if self.should_send_alert(analysis):
             max_kp = analysis["max_kp"]
 
-            message, prob_at_start_time = self.create_message(analysis)
+            context, prob_at_start_time = self.create_message(analysis)
             subject = self.create_subject(analysis, prob_at_start_time)
+            context["subject"] = subject
             self.logger.info(f"Sending with subject: {subject}")
-            include_aurora_watch = self.should_include_aurora_watch(analysis["high_kp_records"])
+            include_aurora_watch = context["aurora"]["show"]
 
             _ = self.copy_image()
             self.LOCAL_AURORA_VIDEO_PATH = None
@@ -824,14 +780,13 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
                     _ = self.copy_aurora_image_at_current_time()
                 except Exception as e:
                     self.logger.exception(f"Error copying aurora gif: {e}")
-            email_sent = self.send_alert(subject, message)
-            message_for_file = markdown.markdown(
-                message.replace("cid:forecast_image", self.LOCAL_IMAGE_PATH)
-                # .replace("cid:aurora_image", "./aurora_LAST.png")
-                .replace("cid:aurora_vid", "./aurora_forecast.gif"),
-                extensions=["tables", "fenced_code", "footnotes", "nl2br"],
+
+            html_message = self.render_html_message(context)
+            email_sent = self.send_alert(subject, html_message)
+
+            html_output = html_message.replace("cid:forecast_image", self.LOCAL_IMAGE_PATH).replace(
+                "cid:aurora_vid", "./aurora_forecast.gif"
             )
-            html_output = self.basic_html_format(message_for_file)
             with open("index.html", "w") as f:
                 f.write(html_output)
 
@@ -845,7 +800,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
 
         return True
 
-    def construct_and_send_email(self, recipients: list[str], subject: str, message: str) -> None:
+    def construct_and_send_email(self, recipients: list[str], subject: str, html_message: str) -> None:
         """Construct and send an email with HTML content and embedded image.
 
         Parameters
@@ -854,20 +809,9 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
             List of recipient email addresses
         subject : str
             Email subject line
-        message : str
-            Email message content (Markdown formatted, will be converted to HTML)
+        html_message : str
+            Fully rendered HTML email body (see `render_html_message`)
         """
-        html_message = markdown.markdown(
-            message,
-            extensions=[
-                "tables",
-                "fenced_code",
-                "footnotes",
-                "nl2br",
-            ],
-        )
-        html_message = self.basic_html_format(html_message)
-
         # root message as multipart/related
         msg_root = MIMEMultipart("related")
         msg_root["From"] = "pager"
@@ -892,9 +836,9 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
             img.add_header("Content-Disposition", "inline", filename="forecast_image.png")
             msg_root.attach(img)
 
-        # include_aurora_image = "cid:aurora_image" in message
+        # include_aurora_image = "cid:aurora_image" in html_message
         include_aurora_image = False
-        include_aurora_video = "cid:aurora_vid" in message
+        include_aurora_video = "cid:aurora_vid" in html_message
 
         # aurora_path = "./aurora_LAST.png"
         # if include_aurora_image and Path(aurora_path).exists():
@@ -917,35 +861,6 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
 
         with smtplib.SMTP("localhost") as smtp:
             smtp.send_message(msg_root)
-
-    def basic_html_format(self, message: str) -> str:
-        formatting = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <style>
-                    body {{ font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #000000; max-width: 1200px; margin: 0 auto; padding: 20px; }}
-                    table {{ border-collapse: collapse; margin: 20px 0; width: 100%; font-size: 13px; }}
-                    th, td {{ padding: 8px 12px; border: 1px solid #ddd; text-align: left; }}
-                    th {{ background-color: #f0f0f0; font-weight: bold; }}
-                    img {{ max-width: 100%; height: auto; }}
-                    h1 {{ color: #d9534f; font-size: 1.5rem; }}
-                    h2 {{ color: #5bc0de; margin-top: 30px; font-size: 1.25rem; }}
-                    h3 {{ color: #000000; font-size: 1.1rem; }}
-                    .forecast-caption {{ font-size: 16px; color: #444444; margin-top: 4px; }}
-                    small {{ font-size: 11px; color: #333; }}
-                    hr {{ border: 0; border-top: 1px solid #ddd; margin: 20px 0; }}
-                    .aurora-watch-row {{ display: flex; flex-wrap: wrap; gap: 16px; margin: 16px 0; }}
-                    .aurora-col {{ flex: 1 1 0; min-width: 280px; }}
-                    .aurora-forecast-video {{ width: 100%; height: auto; display: block; }}
-                </style>
-            </head>
-            <body>
-            {message}
-            </body>
-            </html>
-            """
-        return formatting
 
     def run_continuous_monitoring(self) -> None:
         """

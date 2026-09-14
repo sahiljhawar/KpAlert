@@ -1,0 +1,154 @@
+{#
+  Jinja2 template for the Kp storm alert email (Broadsheet style).
+  Render with jinja2.Template(open("kp_alert_email.html.j2").read()).render(**ctx)
+  and pass the result to markdown-free construct_and_send_email() as `html_message`
+  (skip the markdown.markdown() step — this is already final HTML).
+
+  Expected context:
+    subject: str                         -- same string create_subject() returns
+    issued: str                          -- "HH:MM UTC, DD Mon YYYY"
+    level_code: "G1".."G5"
+    level_name: "Minor Storm" | "Moderate Storm" | "Strong Storm" | "Severe Storm" | "Extreme Storm"
+    headline: str                        -- e.g. "Geomagnetic activity may reach Strong Storm conditions (Kp ≥ 7)"
+    lede: str                            -- the message_prefix sentence
+    current_conditions: str              -- observed_status + time note
+    forecast_caption: str                -- defaults to FORECAST_IMAGE_CAPTION if omitted
+    storm_rows: list[{time, p67, p78, p8}]   -- [] if no tier exceeds 50% combined
+    activity_current_code: "QUIET"|"ACTIVE"|"G1".."G5"
+    aurora: {show: bool, note: str}
+    year: int
+#}
+{% set tag_style = {
+  'G1': "border:1px solid #1186ac;color:#006786;background:transparent;",
+  'G2': "border:1px solid #1186ac;color:#ffffff;background:#1186ac;",
+  'G3': "border:1px solid #d82071;color:#aa0b56;background:transparent;",
+  'G4': "border:1px solid #d82071;color:#ffffff;background:#d82071;",
+  'G5': "border:1px solid #790e3d;color:#ffffff;background:#790e3d;",
+}[level_code] %}
+{% set headline_size = {'G1':24,'G2':26,'G3':28,'G4':30,'G5':34}[level_code] %}
+{% set headline_weight = 'normal' if level_code == 'G1' else 'bold' %}
+{% set reversed_band = level_code == 'G5' %}
+{% set activity_rows = [
+  {'code':'QUIET','label':'Quiet','kp':'0–3','effect':'Quiet conditions'},
+  {'code':'ACTIVE','label':'Active','kp':'4','effect':'Moderate geomagnetic activity'},
+  {'code':'G1','label':'Minor Storm (G1)','kp':'5','effect':'Weak power grid fluctuations'},
+  {'code':'G2','label':'Moderate Storm (G2)','kp':'6','effect':'High-latitude power systems affected'},
+  {'code':'G3','label':'Strong Storm (G3)','kp':'7','effect':'Power systems may need voltage corrections'},
+  {'code':'G4','label':'Severe Storm (G4)','kp':'8','effect':'Possible widespread voltage control problems'},
+  {'code':'G5','label':'Extreme Storm (G5)','kp':'9','effect':'Widespread power system voltage control problems'},
+] %}
+{% set caption = forecast_caption if forecast_caption is defined and forecast_caption else "Colours indicate geomagnetic activity levels: green for quiet (Kp < 3), yellow for moderate (3 < Kp ≤ 6), red for storm (Kp > 6). The dashed line is the official NOAA SWPC Kp forecast; error bars show the ensemble min–max spread." %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light">
+<title>{{ subject }}</title>
+</head>
+<body style="margin:0;padding:0;background:#eae7e7;">
+<span style="display:none;font-size:1px;color:#f3f2f2;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">{{ subject }}</span>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:#f3f2f2;">
+<tr><td align="center" style="padding:32px 16px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:#f3f2f2;">
+
+{% if reversed_band %}
+  <tr><td style="background:#201e1d;padding:14px 28px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+      <td style="font-family:Georgia, 'Times New Roman', Times, serif;font-size:13px;letter-spacing:0.08em;color:#ffffff;text-transform:uppercase;">GFZ Space Weather Bulletin</td>
+      <td align="right" style="font-family:Georgia, 'Times New Roman', Times, serif;font-size:12px;color:#d7d3d3;">Issued {{ issued }}</td>
+    </tr></table>
+  </td></tr>
+{% else %}
+  <tr><td style="border-top:4px solid #201e1d;padding-top:10px;padding-left:28px;padding-right:28px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+      <td style="font-family:Georgia, 'Times New Roman', Times, serif;font-size:13px;letter-spacing:0.08em;color:#201e1d;text-transform:uppercase;">GFZ Space Weather Bulletin</td>
+      <td align="right" style="font-family:Georgia, 'Times New Roman', Times, serif;font-size:12px;color:#7d7979;">Issued {{ issued }}</td>
+    </tr></table>
+    <div style="border-top:1px solid #1186ac;margin-top:8px;"></div>
+  </td></tr>
+{% endif %}
+
+<tr><td style="padding:20px 28px 0;"><span style="display:inline-block;font-family:Georgia, 'Times New Roman', Times, serif;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;padding:4px 10px;{{ tag_style }}">{{ level_code }} · {{ level_name }}</span></td></tr>
+<tr><td style="padding:10px 28px 0;font-family:Georgia, 'Times New Roman', Times, serif;font-size:{{ headline_size }}px;font-weight:{{ headline_weight }};color:#201e1d;line-height:1.2;">{{ headline }}</td></tr>
+<tr><td style="padding:10px 28px 0;font-family:Georgia, 'Times New Roman', Times, serif;font-style:italic;font-size:16px;color:#201e1d;line-height:1.5;">{{ lede }}</td></tr>
+<tr><td style="padding:14px 28px 0;font-family:Georgia, 'Times New Roman', Times, serif;font-size:12px;letter-spacing:0.03em;color:#7d7979;line-height:1.6;">
+  CURRENT CONDITIONS: {{ current_conditions }}<br>ALERT SENT: {{ issued }}
+</td></tr>
+<tr><td style="padding:18px 28px 0;">
+  <img src="cid:forecast_image" width="544" alt="Kp forecast ensemble chart" style="width:100%;max-width:544px;height:auto;display:block;border:1px solid #d7d3d3;">
+</td></tr>
+<tr><td style="padding:8px 28px 0;font-family:Georgia, 'Times New Roman', Times, serif;font-style:italic;font-size:12px;color:#7d7979;line-height:1.5;">
+  {{ caption }}
+</td></tr>
+
+<tr><td style="padding:24px 28px 0;">
+  <span style="display:inline-block;font-family:Georgia, 'Times New Roman', Times, serif;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;padding:4px 10px;border:1px solid #1186ac;color:#006786;background:transparent;">Storm Probability · Kp ≥ 6</span>
+{% if storm_rows %}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;font-family:Georgia, 'Times New Roman', Times, serif;font-size:13px;margin:10px 0 0;">
+  <tr>
+    <td style="padding:6px 8px 6px 0;border-top:2px solid #201e1d;border-bottom:1px solid #201e1d;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#7d7979;">Time (UTC)</td>
+    <td style="padding:6px 8px 6px 0;border-top:2px solid #201e1d;border-bottom:1px solid #201e1d;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#7d7979;">Kp 6–7</td>
+    <td style="padding:6px 8px 6px 0;border-top:2px solid #201e1d;border-bottom:1px solid #201e1d;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#7d7979;">Kp 7–8</td>
+    <td style="padding:6px 0 6px 0;border-top:2px solid #201e1d;border-bottom:1px solid #201e1d;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#7d7979;">Kp ≥ 8</td>
+  </tr>
+  {% for row in storm_rows %}
+    <tr>
+      <td style="padding:7px 8px 7px 0;border-bottom:1px solid #d7d3d3;color:#201e1d;">{{ row.time }}</td>
+      <td style="padding:7px 8px 7px 0;border-bottom:1px solid #d7d3d3;color:#201e1d;">{{ row.p67 }}</td>
+      <td style="padding:7px 8px 7px 0;border-bottom:1px solid #d7d3d3;color:#201e1d;">{{ row.p78 }}</td>
+      <td style="padding:7px 0 7px 0;border-bottom:1px solid #d7d3d3;color:#201e1d;">{{ row.p8 }}</td>
+    </tr>
+  {% endfor %}
+    <tr><td colspan="4" style="padding-top:6px;font-family:Georgia, 'Times New Roman', Times, serif;font-style:italic;font-size:12px;color:#7d7979;">Showing timestamps where combined probability of Kp ≥ 6 exceeds 50%.</td></tr>
+  </table>
+{% else %}
+  <p style="font-family:Georgia, 'Times New Roman', Times, serif;font-style:italic;font-size:13px;color:#7d7979;margin:10px 0 0;">No individual storm-tier probability exceeds 50% at this time.</p>
+{% endif %}
+</td></tr>
+
+<tr><td style="padding:24px 28px 0;">
+  <span style="display:inline-block;font-family:Georgia, 'Times New Roman', Times, serif;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;padding:4px 10px;border:1px solid #1186ac;color:#006786;background:transparent;">Geomagnetic Activity Scale</span>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;font-family:Georgia, 'Times New Roman', Times, serif;font-size:13px;margin:10px 0 0;">
+    <tr>
+      <td style="padding:6px 8px 6px 0;border-top:2px solid #201e1d;border-bottom:1px solid #201e1d;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#7d7979;text-align:left;">Level</td>
+      <td style="padding:6px 8px 6px 0;border-top:2px solid #201e1d;border-bottom:1px solid #201e1d;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#7d7979;text-align:left;">Kp</td>
+      <td style="padding:6px 0 6px 0;border-top:2px solid #201e1d;border-bottom:1px solid #201e1d;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:#7d7979;text-align:left;">Effect</td>
+    </tr>
+    {% for row in activity_rows %}
+    {% set active = row.code == activity_current_code %}
+    <tr>
+      <td style="padding:7px 8px 7px 0;border-bottom:1px solid #d7d3d3;{{ 'font-weight:bold;color:#aa0b56;' if active else 'color:#201e1d;' }}">{{ row.label }}{{ ' &nbsp;←' if active else '' }}</td>
+      <td style="padding:7px 8px 7px 0;border-bottom:1px solid #d7d3d3;{{ 'font-weight:bold;color:#aa0b56;' if active else 'color:#201e1d;' }}">{{ row.kp }}</td>
+      <td style="padding:7px 0 7px 0;border-bottom:1px solid #d7d3d3;color:#201e1d;">{{ row.effect }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</td></tr>
+
+{% if aurora.show %}
+  <tr><td style="padding:24px 28px 0;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;">
+      <tr><td><span style="display:inline-block;font-family:Georgia, 'Times New Roman', Times, serif;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;padding:4px 10px;border:1px solid #d82071;color:#aa0b56;background:transparent;">Aurora Watch</span></td></tr>
+      <tr><td style="padding-top:10px;">
+        <img src="cid:aurora_vid" width="544" alt="Kp-dependent auroral intensity prediction" style="width:100%;max-width:544px;height:auto;display:block;border:1px solid #d7d3d3;">
+      </td></tr>
+      <tr><td style="padding-top:8px;font-family:Georgia, 'Times New Roman', Times, serif;font-size:13px;color:#201e1d;line-height:1.5;">
+        {{ aurora.note }}
+      </td></tr>
+    </table>
+  </td></tr>
+{% endif %}
+
+<tr><td style="padding:28px 28px 24px;">
+  <div style="border-top:1px solid #d7d3d3;padding-top:12px;font-family:Georgia, 'Times New Roman', Times, serif;font-size:11px;color:#7d7979;line-height:1.6;">
+    This is an automated alert from the Kp Index Monitoring System using the GFZ Space Weather Forecast.<br><br>
+    © {{ year }} GFZ Helmholtz Centre for Geosciences | GFZ Helmholtz-Zentrum für Geoforschung.<br>
+    The data/data products are provided "as-is" without warranty of any kind, either expressed or implied, including but not limited to the implied warranties of merchantability, correctness and fitness for a particular purpose. GFZ is not liable for any direct, indirect, incidental or consequential damages arising from the use of this data.
+  </div>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>

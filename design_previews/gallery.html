@@ -1,0 +1,56 @@
+<title>Kp Alert Email Designs</title>
+<style>
+  :root{
+    --bg:#f4f5f6; --panel:#ffffff; --ink:#1b2733; --dim:#6b7278; --line:#dde1e4; --accent:#2451a3;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#14171a; --panel:#1c2024; --ink:#e8ebee; --dim:#9aa2a9; --line:#2c3237; --accent:#6fa3e8;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#14171a; --panel:#1c2024; --ink:#e8ebee; --dim:#9aa2a9; --line:#2c3237; --accent:#6fa3e8;
+  }
+  *{box-sizing:border-box;}
+  body{background:var(--bg);color:var(--ink);font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1100px;margin:0 auto;padding:28px 16px 48px;}
+  h1{font-size:20px;margin:0 0 4px;}
+  p.sub{color:var(--dim);font-size:13px;margin:0 0 20px;}
+  .tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;}
+  .tab{
+    appearance:none;border:1px solid var(--line);background:var(--panel);color:var(--ink);
+    padding:8px 14px;border-radius:20px;font-size:13px;cursor:pointer;
+  }
+  .tab[aria-selected="true"]{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .frame-wrap{
+    border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel);
+    height:80vh;min-height:520px;
+  }
+  iframe{width:100%;height:100%;border:0;display:block;background:#fff;}
+  .note{margin-top:14px;font-size:12px;color:var(--dim);line-height:1.6;}
+</style>
+<div class="wrap">
+  <h1>Kp storm alert email — design options</h1>
+  <p class="sub">Four layouts rendered from the same synthetic G5 alert context. Switch tabs to compare.</p>
+  <div class="tabs" role="tablist" id="tabs">
+    <button class="tab" role="tab" data-src="broadsheet_flat.html" aria-selected="true">Broadsheet (current)</button>
+    <button class="tab" role="tab" data-src="telemetry_flat.html">Telemetry Console</button>
+    <button class="tab" role="tab" data-src="bulletin_flat.html">Field Bulletin</button>
+    <button class="tab" role="tab" data-src="aurora_signal_flat.html">Aurora Signal</button>
+  </div>
+  <div class="frame-wrap">
+    <iframe id="preview" src="broadsheet_flat.html" title="Email design preview"></iframe>
+  </div>
+  <div class="note">Rendered with a synthetic Kp = 9.0 (G5) test scenario. Template sources live in the repo as <code>kp_alert_email*.html.j2</code>.</div>
+</div>
+<script>
+  const tabs = document.querySelectorAll('.tab');
+  const frame = document.getElementById('preview');
+  tabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+      tabs.forEach(b => b.setAttribute('aria-selected', 'false'));
+      btn.setAttribute('aria-selected', 'true');
+      frame.src = btn.dataset.src;
+    });
+  });
+</script>

@@ -5,3 +5,4 @@ typer
 ruff
 markdown
 python-dotenv
+jinja2

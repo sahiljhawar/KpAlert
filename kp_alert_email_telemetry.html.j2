@@ -1,0 +1,142 @@
+{#
+  Design option: "Telemetry Console"
+  A mission-control readout treatment for the Kp storm alert — the alert
+  level is displayed like a status code on a satellite ops console.
+  Same context contract as kp_alert_email.html.j2. See that file's header
+  for the full field list.
+#}
+{% set severity_color = {
+  'QUIET': '#3ddc84', 'ACTIVE': '#8fd13f',
+  'G1': '#e8c547', 'G2': '#f0a83c', 'G3': '#f0793c', 'G4': '#ef4b4b', 'G5': '#ff2f6e',
+} %}
+{% set hero_color = severity_color[level_code] %}
+{% set activity_rows = [
+  {'code':'QUIET','label':'Quiet','kp':'0–3','effect':'Quiet conditions'},
+  {'code':'ACTIVE','label':'Active','kp':'4','effect':'Moderate geomagnetic activity'},
+  {'code':'G1','label':'Minor Storm','kp':'5','effect':'Weak power grid fluctuations'},
+  {'code':'G2','label':'Moderate Storm','kp':'6','effect':'High-latitude power systems affected'},
+  {'code':'G3','label':'Strong Storm','kp':'7','effect':'Power systems may need voltage corrections'},
+  {'code':'G4','label':'Severe Storm','kp':'8','effect':'Possible widespread voltage control problems'},
+  {'code':'G5','label':'Extreme Storm','kp':'9','effect':'Widespread power system voltage control problems'},
+] %}
+{% set caption = forecast_caption if forecast_caption is defined and forecast_caption else "Green: quiet (Kp < 3). Amber: moderate (3 < Kp <= 6). Red/magenta: storm (Kp > 6). Dashed line: official NOAA SWPC forecast. Bars: ensemble min-max spread." %}
+{% set mono = "ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" %}
+{% set sans = "-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark light">
+<title>{{ subject }}</title>
+</head>
+<body style="margin:0;padding:0;background:#050b14;">
+<span style="display:none;font-size:1px;color:#050b14;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">{{ subject }}</span>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:#050b14;">
+<tr><td align="center" style="padding:32px 16px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:#0a1628;">
+
+<tr><td style="border-bottom:2px solid {{ hero_color }};padding:14px 24px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+    <td style="font-family:{{ mono }};font-size:11px;letter-spacing:0.04em;color:#7d90ab;">SPACE WEATHER TELEMETRY</td>
+    <td align="right" style="font-family:{{ mono }};font-size:11px;color:#7d90ab;">{{ issued }}</td>
+  </tr></table>
+</td></tr>
+
+<tr><td style="padding:36px 24px 8px;text-align:center;">
+  <div style="font-family:{{ mono }};font-size:11px;letter-spacing:0.12em;color:#4a5b76;">ALERT LEVEL</div>
+  <div style="font-family:{{ mono }};font-size:78px;line-height:1;font-weight:700;color:{{ hero_color }};padding:8px 0;">{{ level_code }}</div>
+  <div style="font-family:{{ mono }};font-size:14px;letter-spacing:0.08em;color:{{ hero_color }};">{{ level_name | upper }}</div>
+</td></tr>
+
+<tr><td style="padding:22px 24px 0;font-family:{{ sans }};font-size:16px;color:#e7edf6;line-height:1.5;text-align:center;">
+  {{ headline }}
+</td></tr>
+<tr><td style="padding:14px 24px 0;font-family:{{ sans }};font-size:14px;color:#aab8cc;line-height:1.6;text-align:center;">
+  {{ lede }}
+</td></tr>
+
+<tr><td style="padding:22px 24px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:#101f38;border:1px solid #24344f;">
+    <tr>
+      <td style="padding:10px 14px;font-family:{{ mono }};font-size:12px;color:#7d90ab;">OBS &nbsp;{{ current_conditions }}</td>
+    </tr>
+    <tr>
+      <td style="padding:0 14px 10px;font-family:{{ mono }};font-size:12px;color:#7d90ab;">SENT &nbsp;{{ issued }}</td>
+    </tr>
+  </table>
+</td></tr>
+
+<tr><td style="padding:22px 24px 0;">
+  <img src="cid:forecast_image" width="552" alt="Kp forecast ensemble chart" style="width:100%;max-width:552px;height:auto;display:block;border:1px solid #24344f;">
+</td></tr>
+<tr><td style="padding:8px 24px 0;font-family:{{ mono }};font-size:11px;color:#5a6d89;line-height:1.5;">
+  // {{ caption }}
+</td></tr>
+
+<tr><td style="padding:28px 24px 0;">
+  <div style="font-family:{{ mono }};font-size:11px;letter-spacing:0.08em;color:#7d90ab;border-bottom:1px solid #24344f;padding-bottom:6px;">STORM PROBABILITY · Kp &ge; 6</div>
+{% if storm_rows %}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;font-family:{{ mono }};font-size:12px;margin:8px 0 0;">
+  <tr>
+    <td style="padding:4px 6px 4px 0;color:#4a5b76;">TIME (UTC)</td>
+    <td style="padding:4px 6px 4px 0;color:#4a5b76;">6-7</td>
+    <td style="padding:4px 6px 4px 0;color:#4a5b76;">7-8</td>
+    <td style="padding:4px 0;color:#4a5b76;">&ge;8</td>
+  </tr>
+  {% for row in storm_rows %}
+    <tr>
+      <td style="padding:4px 6px 4px 0;border-top:1px solid #1a2942;color:#cfd9e8;">{{ row.time }}</td>
+      <td style="padding:4px 6px 4px 0;border-top:1px solid #1a2942;color:#cfd9e8;">{{ row.p67 }}</td>
+      <td style="padding:4px 6px 4px 0;border-top:1px solid #1a2942;color:#cfd9e8;">{{ row.p78 }}</td>
+      <td style="padding:4px 0;border-top:1px solid #1a2942;color:#cfd9e8;">{{ row.p8 }}</td>
+    </tr>
+  {% endfor %}
+  </table>
+  <div style="font-family:{{ mono }};font-size:10px;color:#4a5b76;padding-top:6px;">rows where combined P(Kp&ge;6) &gt; 50%</div>
+{% else %}
+  <div style="font-family:{{ mono }};font-size:12px;color:#4a5b76;padding:10px 0 0;">-- no tier exceeds 50% probability --</div>
+{% endif %}
+</td></tr>
+
+<tr><td style="padding:28px 24px 0;">
+  <div style="font-family:{{ mono }};font-size:11px;letter-spacing:0.08em;color:#7d90ab;border-bottom:1px solid #24344f;padding-bottom:6px;">ACTIVITY LADDER</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;font-family:{{ sans }};font-size:13px;margin:8px 0 0;">
+    {% for row in activity_rows %}
+    {% set active = row.code == activity_current_code %}
+    <tr>
+      <td width="6" style="background:{{ severity_color[row.code] }};"></td>
+      <td style="padding:7px 0 7px 10px;{{ 'font-weight:700;color:#ffffff;' if active else 'color:#8b9bb4;' }}">
+        {{ '&#9656; ' | safe if active else '' }}{{ row.label }} <span style="font-family:{{ mono }};color:{{ severity_color[row.code] }};">[{{ row.code }}]</span>
+      </td>
+      <td style="padding:7px 0;font-family:{{ mono }};{{ 'color:#ffffff;' if active else 'color:#5a6d89;' }}">Kp {{ row.kp }}</td>
+      <td style="padding:7px 0;{{ 'color:#cfd9e8;' if active else 'color:#5a6d89;' }}">{{ row.effect }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</td></tr>
+
+{% if aurora.show %}
+<tr><td style="padding:28px 24px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:#101f38;border:1px solid #ff2f6e;">
+    <tr><td style="padding:12px 14px;font-family:{{ mono }};font-size:12px;letter-spacing:0.08em;color:#ff2f6e;">&#9679; SIGNAL DETECTED — AURORA WATCH</td></tr>
+    <tr><td style="padding:0 14px 12px;">
+      <img src="cid:aurora_vid" width="524" alt="Kp-dependent auroral intensity prediction" style="width:100%;max-width:524px;height:auto;display:block;border:1px solid #24344f;">
+    </td></tr>
+    <tr><td style="padding:0 14px 14px;font-family:{{ sans }};font-size:13px;color:#cfd9e8;line-height:1.5;">{{ aurora.note }}</td></tr>
+  </table>
+</td></tr>
+{% endif %}
+
+<tr><td style="padding:28px 24px 24px;">
+  <div style="border-top:1px solid #24344f;padding-top:12px;font-family:{{ mono }};font-size:10px;color:#4a5b76;line-height:1.6;">
+    AUTOMATED ALERT — KP INDEX MONITORING SYSTEM — GFZ SPACE WEATHER FORECAST<br><br>
+    (c) {{ year }} GFZ Helmholtz Centre for Geosciences.
+    Data provided "as-is" without warranty of any kind. GFZ is not liable for damages arising from use of this data.
+  </div>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>
