@@ -18,6 +18,8 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -158,7 +160,53 @@ class KpMonitor:
         """Get the aurora video, convert to GIF and return path to the copied file."""
         gif_path = "./aurora_forecast.gif"
         video_path = shutil.copy2(self.VIDEO_PATH_AURORA, "./aurora_forecast.mp4")
+        self.make_video_web_safe(video_path)
         return self.convert_video_to_gif(video_path, gif_path)
+
+    def make_video_web_safe(self, video_path: str) -> str | None:
+        """Re-encode `video_path` in place to a browser/email-playable H.264 MP4.
+
+        Source aurora videos are exported as H.264 High 4:4:4 Predictive
+        (yuv444p), a profile no mainstream browser or mail client's video
+        decoder supports -- they need yuv420p with a standard profile, or
+        playback fails with "no supported format" errors.
+        """
+        import subprocess
+
+        tmp_path = f"{video_path}.tmp.mp4"
+        try:
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                video_path,
+                "-vf",
+                "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                "-c:v",
+                "libx264",
+                "-profile:v",
+                "high",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                "-an",
+                tmp_path,
+            ]
+            subprocess.run(cmd, check=True, capture_output=True)
+            if not Path(tmp_path).exists() or Path(tmp_path).stat().st_size == 0:
+                raise RuntimeError(f"ffmpeg produced no usable output for {video_path}")
+            shutil.move(tmp_path, video_path)
+            self.logger.info(f"Re-encoded aurora video for web/email playback: {video_path}")
+            return video_path
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"ffmpeg web-safe re-encode failed: {e.stderr.decode()}")
+            return None
+        except RuntimeError as e:
+            self.logger.error(str(e))
+            return None
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
     def copy_aurora_image_at_current_time(self) -> str | None:
         """Get the aurora image corresponding to the current time."""
@@ -549,11 +597,12 @@ class KpMonitor:
         start_utc = start_time.tz_convert(utc)
         end_utc = end_time.tz_convert(utc)
         if start_time == end_time:
-            message_prefix = f"""At {start_utc.strftime("%H:%M (UTC) %d.%m.%Y")}"""
+            time_range = f"""At {start_utc.strftime("%H:%M (UTC) %d.%m.%Y")}"""
         else:
-            message_prefix = (
-                f"""From {start_utc.strftime("%H:%M (UTC) %d.%m.%Y")}  to {end_utc.strftime("%H:%M (UTC) %d.%m.%Y")}"""
+            time_range = (
+                f"""From {start_utc.strftime("%H:%M (UTC) %d.%m.%Y")} to {end_utc.strftime("%H:%M (UTC) %d.%m.%Y")}"""
             )
+
         # Use "=" for Kp 9 (maximum value), "≥" for all other values
         kp_comparison = "=" if max_kp_at_finite_time == 9 else "≥"
 
@@ -565,8 +614,8 @@ class KpMonitor:
             f"(Kp {kp_comparison} {DECIMAL_TO_KP[max_kp_at_finite_time]})"
         )
         lede = (
-            f"{message_prefix}, activity may reach {end_time_kp_max_status} with Kp {kp_comparison} "
-            f"{DECIMAL_TO_KP[max_kp_at_finite_time]}, probability ≥ {prob_at_start_time * 100:.0f}%."
+            f"{time_range}, Geomagnetic Activity can reach {end_time_kp_max_status} "
+            f"(Kp {kp_comparison} {DECIMAL_TO_KP[max_kp_at_finite_time]}) with probability of ~{prob_at_start_time * 100:.0f}%."
         )
 
         if observed_time is not None:
@@ -781,11 +830,15 @@ class KpMonitor:
                 except Exception as e:
                     self.logger.exception(f"Error copying aurora gif: {e}")
 
+            context["aurora"]["video_attached"] = include_aurora_watch and Path("./aurora_forecast.mp4").exists()
+
             html_message = self.render_html_message(context)
             email_sent = self.send_alert(subject, html_message)
 
-            html_output = html_message.replace("cid:forecast_image", self.LOCAL_IMAGE_PATH).replace(
-                "cid:aurora_vid", "./aurora_forecast.gif"
+            html_output = (
+                html_message.replace("cid:forecast_image", self.LOCAL_IMAGE_PATH)
+                .replace("cid:aurora_video_mp4", "./aurora_forecast.mp4")
+                .replace("cid:aurora_vid", "./aurora_forecast.gif")
             )
             with open("index.html", "w") as f:
                 f.write(html_output)
@@ -812,8 +865,9 @@ class KpMonitor:
         html_message : str
             Fully rendered HTML email body (see `render_html_message`)
         """
-        # root message as multipart/related
-        msg_root = MIMEMultipart("related")
+        # root message as multipart/mixed: holds the inline body (multipart/related)
+        # plus any real, downloadable attachments (e.g. the aurora video) as siblings.
+        msg_root = MIMEMultipart("mixed")
         msg_root["From"] = "pager"
         msg_root["Reply-To"] = "jhawar@gfz-potsdam.de"
 
@@ -823,8 +877,11 @@ class KpMonitor:
             msg_root["Bcc"] = ", ".join(recipients)
         msg_root["Subject"] = subject
 
+        msg_related = MIMEMultipart("related")
+        msg_root.attach(msg_related)
+
         msg_alternative = MIMEMultipart("alternative")
-        msg_root.attach(msg_alternative)
+        msg_related.attach(msg_alternative)
 
         plain_text = "Your email client does not support HTML."
         msg_alternative.attach(MIMEText(plain_text, "plain"))
@@ -834,19 +891,9 @@ class KpMonitor:
             img = MIMEImage(f.read())
             img.add_header("Content-ID", "<forecast_image>")
             img.add_header("Content-Disposition", "inline", filename="forecast_image.png")
-            msg_root.attach(img)
+            msg_related.attach(img)
 
-        # include_aurora_image = "cid:aurora_image" in html_message
-        include_aurora_image = False
         include_aurora_video = "cid:aurora_vid" in html_message
-
-        # aurora_path = "./aurora_LAST.png"
-        # if include_aurora_image and Path(aurora_path).exists():
-        #     with open(aurora_path, "rb") as f:
-        #         aurora_img = MIMEImage(f.read())
-        #         aurora_img.add_header("Content-ID", "<aurora_image>")
-        #         aurora_img.add_header("Content-Disposition", "inline", filename="aurora_image.png")
-        #         msg_root.attach(aurora_img)
 
         aurora_path = "./aurora_forecast.gif"
         if include_aurora_video and Path(aurora_path).exists():
@@ -854,10 +901,19 @@ class KpMonitor:
                 aurora_img = MIMEImage(f.read())
                 aurora_img.add_header("Content-ID", "<aurora_vid>")
                 aurora_img.add_header("Content-Disposition", "inline", filename="aurora_forecast.gif")
-                msg_root.attach(aurora_img)
+                msg_related.attach(aurora_img)
 
-        # Note: Video attachments are not well supported in email clients
-        # The video will be available in the generated HTML file
+        # Note: cid:-referenced <video><source> is not reliably resolved by mail clients
+        # (confirmed broken in Thunderbird even with a web-safe codec), so the video
+        # travels as a normal downloadable attachment instead of an inline part.
+        aurora_video_path = "./aurora_forecast.mp4"
+        if include_aurora_video and Path(aurora_video_path).exists():
+            with open(aurora_video_path, "rb") as f:
+                aurora_video = MIMEBase("video", "mp4")
+                aurora_video.set_payload(f.read())
+            encoders.encode_base64(aurora_video)
+            aurora_video.add_header("Content-Disposition", "attachment", filename="aurora_forecast.mp4")
+            msg_root.attach(aurora_video)
 
         with smtplib.SMTP("localhost") as smtp:
             smtp.send_message(msg_root)
