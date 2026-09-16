@@ -24,7 +24,7 @@ from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, cast
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -139,7 +139,7 @@ class KpMonitor:
         self.kp_threshold_str = DECIMAL_TO_KP[self.config.kp_alert_threshold]
         self.LOCAL_IMAGE_PATH = self.copy_image()
         self.LOCAL_AURORA_VIDEO_PATH = None  # set when building message with AURORA WATCH
-        self.current_utc_time = pd.Timestamp(datetime.now(timezone.utc))
+        self.current_utc_time = cast(pd.Timestamp, pd.Timestamp(datetime.now(timezone.utc)))
         self.log_suffix = log_suffix
         self.setup_logging()
 
@@ -368,7 +368,7 @@ class KpMonitor:
 
                 empty = df.iloc[0:0].copy()
                 storm_prob_df = pd.DataFrame(
-                    columns=["Time (UTC)", "Probability 6-7", "Probability 7-8", "Probability >= 8"]
+                    columns=pd.Index(["Time (UTC)", "Probability 6-7", "Probability 7-8", "Probability >= 8"])
                 )
                 return AnalysisResults(
                     max_kp=float("nan"),
@@ -428,7 +428,7 @@ class KpMonitor:
             probability_df = pd.DataFrame({"Time (UTC)": df["Time (UTC)"], "Probability": probability})
             probability_df.index = probability_df["Time (UTC)"]
             probability_df.drop(columns=["Time (UTC)"], inplace=True)
-            storm_prob_df = pd.DataFrame(columns=["Time (UTC)", "Prob Kp 6-7", "Prob 7-8", "Prob Kp >= 8"])
+            storm_prob_df = pd.DataFrame(columns=pd.Index(["Time (UTC)", "Prob Kp 6-7", "Prob 7-8", "Prob Kp >= 8"]))
             return AnalysisResults(
                 max_kp=float("nan"),
                 max_df=pd.Series(dtype=float),
@@ -563,11 +563,6 @@ class KpMonitor:
 
         max_values = analysis["max_df"]
 
-        prob_at_time = 24  # hours
-        target_time = self.current_utc_time + pd.Timedelta(hours=prob_at_time)
-        nearest_idx = target_time.round("3h")
-        high_prob_value = probability_df[:nearest_idx]["Probability"].max()
-
         threshold_status, threshold_level, _ = self.get_status_level_color(self.config.kp_alert_threshold)
 
         max_kp_at_finite_time = np.round(max_values.max(), 2)
@@ -583,7 +578,8 @@ class KpMonitor:
             start_time = high_records["minimum"].idxmax()
             end_time = high_records["maximum"].idxmax()
 
-        observed_time, observed_kp = self.get_observed_kp(analysis.next_24h_forecast.index[0])
+        observed_result = self.get_observed_kp(analysis.next_24h_forecast.index[0])
+        observed_time, observed_kp = observed_result if observed_result is not None else (None, None)
         prob_at_start_time = probability_df.loc[start_time]["Probability"]
 
         if observed_kp is not None:

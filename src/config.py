@@ -53,7 +53,7 @@ class MonitorConfig:
     debug_with_swpc: bool = False
 
     @staticmethod
-    def from_yaml(config_file: Path | str = None) -> MonitorConfig:
+    def from_yaml(config_file: Path | str | None = None) -> MonitorConfig:
         """
         Load configuration from YAML file.
 

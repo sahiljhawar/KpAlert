@@ -1,8 +1,0 @@
-pandas<3
-requests
-PyYAML
-typer
-ruff
-markdown
-python-dotenv
-jinja2
