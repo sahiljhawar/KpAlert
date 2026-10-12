@@ -28,8 +28,6 @@ CTX = {
     ],
     "activity_current_code": "G3",
     "aurora": {
-        "show": True,
-        "video_attached": True,
         "note": "Kp ≥ 5 indicate potential auroral activity at Berlin latitudes. Time indicated in UTC.",
     },
     "year": 2026,
@@ -40,7 +38,7 @@ def render() -> str:
     """Render with cid: references swapped for local file paths, for browser preview."""
     out = Template(TEMPLATE_PATH.read_text()).render(**CTX)
     return out.replace("cid:forecast_image", "./assets/kp_swift_ensemble_LAST.png").replace(
-        "cid:aurora_vid", "./assets/aurora_LAST.png"
+        "cid:aurora_image", "./assets/aurora_LAST.png"
     )
 
 

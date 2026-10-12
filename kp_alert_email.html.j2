@@ -15,7 +15,7 @@
     forecast_caption: str                -- defaults to FORECAST_IMAGE_CAPTION if omitted
     storm_rows: list[{time, p67, p78, p8}]   -- [] if no tier exceeds 50% combined
     activity_current_code: "QUIET"|"ACTIVE"|"G1".."G5"
-    aurora: {show: bool, note: str}
+    aurora: {note: str}
     year: int
 #}
 {% set tag_style = {
@@ -107,7 +107,6 @@
       <td style="padding:6px 0 6px 0;border-top:2px solid #201e1d;border-bottom:1px solid #201e1d;font-size:17px;letter-spacing:0.06em;text-transform:uppercase;color:#7d7979;text-align:left;">Effect</td>
     </tr>
     {% for row in activity_rows %}
-    {% set active = row.code == activity_current_code %}
     <tr>
       <td style="padding:7px 8px 7px 0;border-bottom:1px solid #d7d3d3;color:#201e1d;font-size:16px">{{ row.label }}</td>
       <td style="padding:7px 8px 7px 0;border-bottom:1px solid #d7d3d3;color:#201e1d;font-size:16px">{{ row.kp }}</td>
@@ -118,27 +117,20 @@
   <p style="margin:6px 0 0;font-family:Georgia, 'Times New Roman', Times, serif;font-style:italic;font-size:14px;color:#7d7979;">Source: NOAA Space Weather Prediction Center, G-scale.</p>
 </td></tr>
 
-{% if aurora.show %}
   <tr><td style="padding:24px 28px 0;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;">
       <tr><td><span style="display:inline-block;font-family:Georgia, 'Times New Roman', Times, serif;font-size:18px;letter-spacing:0.06em;text-transform:uppercase;padding:4px 10px;border:1px solid#1186ac;color:#006786;background:transparent;">Aurora Watch</span></td></tr>
       <tr><td style="padding-top:10px;">
-        <img src="cid:aurora_vid" width="1364" alt="Kp-dependent auroral intensity prediction" style="width:100%;max-width:1364px;height:auto;display:block;border:1px solid #d7d3d3;">
+        <img src="cid:aurora_image" width="1364" alt="Kp-dependent auroral intensity prediction" style="width:100%;max-width:1364px;height:auto;display:block;border:1px solid #d7d3d3;">
       </td></tr>
       <tr><td style="padding-top:8px;font-family:Georgia, 'Times New Roman', Times, serif;font-size:16px;">
         <a href="https://spaceweather.gfz.de/products-data/forecasts/auroral-activity-forecast" style="color:#006786;text-decoration:underline;">Click to see 3-day aurora forecast</a>
       </td></tr>
-      {% if aurora.video_attached %}
-      <tr><td style="padding-top:6px;font-family:Georgia, 'Times New Roman', Times, serif;font-style:italic;font-size:14px;color:#54504f;">
-        3-day aurora forecast animation is attached to this message.
-      </td></tr>
-      {% endif %}
       <tr><td style="padding-top:8px;font-family:Georgia, 'Times New Roman', Times, serif;font-size:16px;color:#201e1d;line-height:1.5;">
         {{ aurora.note }}
       </td></tr>
     </table>
   </td></tr>
-{% endif %}
 
 <tr><td style="padding:28px 28px 24px;">
   <div style="border-top:1px solid #d7d3d3;padding-top:12px;font-family:Georgia, 'Times New Roman', Times, serif;font-size:15px;color:#7d7979;line-height:1.6;">

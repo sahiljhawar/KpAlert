@@ -18,8 +18,6 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from email import encoders
-from email.mime.base import MIMEBase
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -36,6 +34,8 @@ from jinja2 import Template
 
 from src.config import MonitorConfig
 
+np.random.seed(42)
+
 EMAIL_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "kp_alert_email.html.j2"
 
 LEVEL_NAMES = {
@@ -49,6 +49,16 @@ LEVEL_NAMES = {
 # Maps the level strings returned by get_status_level_color() onto the
 # codes used by the Geomagnetic Activity Scale table in the email template.
 ACTIVITY_CODE_MAP = {"MODERATE": "ACTIVE"}
+
+
+LEVEL_PROB_COLUMNS = {
+    "G5": ["prob >= 8"],
+    "G4": ["prob >= 8"],
+    "G3": ["prob 7-8", "prob >= 8"],
+    "G2": ["prob 6-7", "prob 7-8", "prob >= 8"],
+    "G1": ["prob 5-6", "prob 6-7", "prob 7-8", "prob >= 8"],
+    "MODERATE": ["prob 4-5", "prob 5-6", "prob 6-7", "prob 7-8", "prob >= 8"],
+}
 
 # Display times in utc (Europe/Berlin handles utc/CEST)
 ETC = ZoneInfo("Europe/Berlin")
@@ -121,8 +131,8 @@ class KpMonitor:
     IMAGE_PATH = os.environ.get("IMAGE_PATH", "./assets/kp_swift_ensemble_LAST.png")
     IMAGE_PATH_SWPC = os.environ.get("IMAGE_PATH_SWPC", "./assets/kp_swift_ensemble_with_swpc_LAST.png")
     CSV_PATH = os.environ.get("CSV_PATH", "./assets/kp_product_file_SWIFT_LAST.csv")
-    VIDEO_PATH_AURORA = os.environ.get("VIDEO_PATH_AURORA", "./assets/aurora_forecast.mp4")
     IMAGE_PATH_AURORA = os.environ.get("IMAGE_PATH_AURORA", "./assets/aurora_LAST.png")
+    AURORA_ARCHIVE_PATH = os.environ.get("AURORA_ARCHIVE_PATH", "./assets/aurora_archive")
 
     # Caption for the forecast plot (SWPC + Min-Max)
     FORECAST_IMAGE_CAPTION = "Colours indicate geomagnetic activity levels: green corresponds to quiet conditions (Kp &lt; 3), yellow to moderate activity (3 &lt; Kp &le; 6), and red to storm conditions (Kp &gt; 6). The red dashed line shows the official NOAA SWPC Kp forecast. Error bars represent the minimum-maximum spread of forecasted Kp values."
@@ -138,7 +148,6 @@ class KpMonitor:
         self.config.kp_alert_threshold = np.round(self.config.kp_alert_threshold, 2)
         self.kp_threshold_str = DECIMAL_TO_KP[self.config.kp_alert_threshold]
         self.LOCAL_IMAGE_PATH = self.copy_image()
-        self.LOCAL_AURORA_VIDEO_PATH = None  # set when building message with AURORA WATCH
         self.current_utc_time = cast(pd.Timestamp, pd.Timestamp(datetime.now(timezone.utc)))
         self.log_suffix = log_suffix
         self.setup_logging()
@@ -156,60 +165,8 @@ class KpMonitor:
             return shutil.copy2(self.IMAGE_PATH_SWPC, "./kp_swift_ensemble_with_swpc_LAST.png")
         return shutil.copy2(self.IMAGE_PATH, "./kp_swift_ensemble_LAST.png")
 
-    def copy_aurora_gif(self) -> str | None:
-        """Get the aurora video, convert to GIF and return path to the copied file."""
-        gif_path = "./aurora_forecast.gif"
-        video_path = shutil.copy2(self.VIDEO_PATH_AURORA, "./aurora_forecast.mp4")
-        self.make_video_web_safe(video_path)
-        return self.convert_video_to_gif(video_path, gif_path)
-
-    def make_video_web_safe(self, video_path: str) -> str | None:
-        """Re-encode `video_path` in place to a browser/email-playable H.264 MP4.
-
-        Source aurora videos are exported as H.264 High 4:4:4 Predictive
-        (yuv444p), a profile no mainstream browser or mail client's video
-        decoder supports -- they need yuv420p with a standard profile, or
-        playback fails with "no supported format" errors.
-        """
-        import subprocess
-
-        tmp_path = f"{video_path}.tmp.mp4"
-        try:
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                video_path,
-                "-vf",
-                "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-                "-c:v",
-                "libx264",
-                "-profile:v",
-                "high",
-                "-pix_fmt",
-                "yuv420p",
-                "-movflags",
-                "+faststart",
-                "-an",
-                tmp_path,
-            ]
-            subprocess.run(cmd, check=True, capture_output=True)
-            if not Path(tmp_path).exists() or Path(tmp_path).stat().st_size == 0:
-                raise RuntimeError(f"ffmpeg produced no usable output for {video_path}")
-            shutil.move(tmp_path, video_path)
-            self.logger.info(f"Re-encoded aurora video for web/email playback: {video_path}")
-            return video_path
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"ffmpeg web-safe re-encode failed: {e.stderr.decode()}")
-            return None
-        except RuntimeError as e:
-            self.logger.error(str(e))
-            return None
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
-
     def copy_aurora_image_at_current_time(self) -> str | None:
-        """Get the aurora image corresponding to the current time."""
+        """Get the aurora image for the current hour from the archive, falling back to the static default."""
 
         current_time_YYYY = self.current_utc_time.strftime("%Y")
         current_time_MM = self.current_utc_time.strftime("%m")
@@ -217,22 +174,20 @@ class KpMonitor:
         current_time_HH = self.current_utc_time.strftime("%H")
         aurora_YYYY_MM_filename = f"{current_time_YYYY}/{current_time_MM}/{current_time_YYYY}{current_time_MM}{current_time_DD}_{current_time_HH}"
 
-        aurora_image_full_path = Path(self.IMAGE_PATH_AURORA) / f"{aurora_YYYY_MM_filename}.png"
+        aurora_image_full_path = Path(self.AURORA_ARCHIVE_PATH) / f"{aurora_YYYY_MM_filename}.png"
 
         if aurora_image_full_path.exists():
             return shutil.copy2(aurora_image_full_path, "./aurora_LAST.png")
-        else:
-            self.logger.warning(f"Aurora image for current time not found: {aurora_image_full_path}.")
-            return None
 
-    def should_include_aurora_watch(self, high_records: pd.DataFrame) -> bool:
-        """Return True when the message should include the aurora watch section."""
-        high_records_above_threshold = high_records[
-            (high_records["minimum"].astype(float) >= self.AURORA_KP)
-            | (high_records["median"].astype(float) >= self.AURORA_KP)
-            | (high_records["maximum"].astype(float) >= self.AURORA_KP)
-        ]
-        return not high_records_above_threshold.empty
+        self.logger.warning(
+            f"Aurora image for current time not found: {aurora_image_full_path}; using static fallback."
+        )
+        fallback_path = Path(self.IMAGE_PATH_AURORA)
+        if fallback_path.exists():
+            return shutil.copy2(fallback_path, "./aurora_LAST.png")
+
+        self.logger.warning(f"Static fallback aurora image not found either: {fallback_path}.")
+        return None
 
     def setup_logging(self) -> None:
         """
@@ -310,7 +265,7 @@ class KpMonitor:
 
         for i in range(20):
             vals = np.round(np.random.choice(np.linspace(4, 9, 28), len(time_index)), 2)
-            data[f"kp_{i}"] = vals
+            data[f"kp_{i}"] = self.round_to_step(vals)
             kp_members.append(vals)
 
         kp_array = np.vstack(kp_members).T
@@ -398,7 +353,9 @@ class KpMonitor:
             probability_df.drop(columns=["Time (UTC)"], inplace=True)
             probability_df = probability_df.replace({"Probability": {1.0: 0.95}})
 
-            storm_prob_df = df[df.index >= self.current_utc_time][["prob 6-7", "prob 7-8", "prob >= 8"]].copy()
+            storm_prob_df = df[df.index >= self.current_utc_time][
+                ["prob 4-5", "prob 5-6", "prob 6-7", "prob 7-8", "prob >= 8"]
+            ].copy()
 
             analysis = AnalysisResults(
                 max_kp=max,
@@ -517,28 +474,6 @@ class KpMonitor:
             self.logger.error(f"Error fetching observed Kp: {e}", exc_info=True)
             return None
 
-    def convert_video_to_gif(
-        self, video_path: str, output_path: str = "./aurora_forecast.gif", fps: int = 5
-    ) -> str | None:
-        import subprocess
-
-        try:
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                video_path,
-                "-lavfi",
-                f"fps={fps},split[s0][s1];[s0]palettegen=max_colors=16[p];[s1][p]paletteuse",
-                output_path,
-            ]
-            subprocess.run(cmd, check=True, capture_output=True)
-            self.logger.info(f"GIF created: {output_path} ({Path(output_path).stat().st_size / 1024:.0f} KB)")
-            return output_path
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"ffmpeg GIF conversion failed: {e.stderr.decode()}")
-            return None
-
     def create_message(self, analysis: AnalysisResults) -> tuple[dict, float]:
         """
         Build the Jinja2 rendering context for the alert email.
@@ -552,8 +487,8 @@ class KpMonitor:
         -------
         context : dict
             Context to render `kp_alert_email.html.j2` with
-        prob_at_start_time : float
-            Probability at `start_time`, also needed by `create_subject`
+        prob_at_peak : float
+            Probability of reaching the peak severity level, also needed by `create_subject`
         """
         high_records = analysis["high_kp_records"]
         probability_df = analysis["probability_df"]
@@ -580,7 +515,14 @@ class KpMonitor:
 
         observed_result = self.get_observed_kp(analysis.next_24h_forecast.index[0])
         observed_time, observed_kp = observed_result if observed_result is not None else (None, None)
-        prob_at_start_time = probability_df.loc[start_time]["Probability"]
+
+        # Probability of actually reaching the peak severity named in the headline/lede, evaluated
+        # at the time that peak occurs -- not the (much looser) probability of merely exceeding the
+        # configured alert threshold, which is a different and usually much higher number.
+        storm_prob_df = analysis["storm_prob_df"]
+        peak_time = max_values.idxmax()
+        prob_columns = LEVEL_PROB_COLUMNS.get(max_kp_at_finite_time_level, LEVEL_PROB_COLUMNS["MODERATE"])
+        prob_at_peak = storm_prob_df.loc[peak_time, prob_columns].sum()
 
         if observed_kp is not None:
             observed_status, _, _ = self.get_status_level_color(observed_kp)
@@ -611,7 +553,7 @@ class KpMonitor:
         )
         lede = (
             f"{time_range}, Geomagnetic Activity can reach {end_time_kp_max_status} "
-            f"(Kp {kp_comparison} {DECIMAL_TO_KP[max_kp_at_finite_time]}) with probability of ~{prob_at_start_time * 100:.0f}%."
+            f"(Kp {kp_comparison} {DECIMAL_TO_KP[max_kp_at_finite_time]}) with probability of ~{prob_at_peak * 100:.0f}%."
         )
 
         if observed_time is not None:
@@ -635,7 +577,6 @@ class KpMonitor:
                     }
                 )
 
-        include_aurora_watch = self.should_include_aurora_watch(high_records)
         activity_current_code = ACTIVITY_CODE_MAP.get(threshold_level, threshold_level)
 
         context = {
@@ -649,7 +590,6 @@ class KpMonitor:
             "storm_rows": storm_rows,
             "activity_current_code": activity_current_code,
             "aurora": {
-                "show": include_aurora_watch,
                 "note": (
                     f"Kp ≥ {DECIMAL_TO_KP[self.AURORA_KP]} indicate potential auroral activity at Berlin "
                     "latitudes. Time indicated in UTC."
@@ -658,13 +598,13 @@ class KpMonitor:
             "year": datetime.now().year,
         }
 
-        return context, prob_at_start_time
+        return context, prob_at_peak
 
     def render_html_message(self, context: dict) -> str:
         """Render the alert email HTML from `kp_alert_email.html.j2` using `context`."""
         return Template(EMAIL_TEMPLATE_PATH.read_text()).render(**context)
 
-    def create_subject(self, analysis: AnalysisResults, prob_at_start_time: float) -> str:
+    def create_subject(self, analysis: AnalysisResults, prob_at_peak: float) -> str:
         """
         Create email subject line based on analysis results.
 
@@ -681,7 +621,7 @@ class KpMonitor:
         # _, level_min, _ = self.get_status_level_color(analysis["high_kp_records"]["minimum"].max())
         status_max, level_max, _ = self.get_status_level_color(analysis["high_kp_records"]["maximum"].max())
 
-        subject = f"Alert: {status_max} predicted with probability ≥ {prob_at_start_time * 100:.0f}%."
+        subject = f"Alert: {status_max} predicted with probability ≥ {prob_at_peak * 100:.0f}%."
         return subject.strip()
 
     def get_status_level_color(self, kp: float) -> tuple[str, str, str]:
@@ -811,30 +751,22 @@ class KpMonitor:
         if self.should_send_alert(analysis):
             max_kp = analysis["max_kp"]
 
-            context, prob_at_start_time = self.create_message(analysis)
-            subject = self.create_subject(analysis, prob_at_start_time)
+            context, prob_at_peak = self.create_message(analysis)
+            subject = self.create_subject(analysis, prob_at_peak)
             context["subject"] = subject
             self.logger.info(f"Sending with subject: {subject}")
-            include_aurora_watch = context["aurora"]["show"]
 
             _ = self.copy_image()
-            self.LOCAL_AURORA_VIDEO_PATH = None
-            if include_aurora_watch:
-                try:
-                    self.LOCAL_AURORA_VIDEO_PATH = self.copy_aurora_gif()
-                    _ = self.copy_aurora_image_at_current_time()
-                except Exception as e:
-                    self.logger.exception(f"Error copying aurora gif: {e}")
-
-            context["aurora"]["video_attached"] = include_aurora_watch and Path("./aurora_forecast.mp4").exists()
+            try:
+                _ = self.copy_aurora_image_at_current_time()
+            except Exception as e:
+                self.logger.exception(f"Error copying aurora image: {e}")
 
             html_message = self.render_html_message(context)
             email_sent = self.send_alert(subject, html_message)
 
-            html_output = (
-                html_message.replace("cid:forecast_image", self.LOCAL_IMAGE_PATH)
-                .replace("cid:aurora_video_mp4", "./aurora_forecast.mp4")
-                .replace("cid:aurora_vid", "./aurora_forecast.gif")
+            html_output = html_message.replace("cid:forecast_image", self.LOCAL_IMAGE_PATH).replace(
+                "cid:aurora_image", "./aurora_LAST.png"
             )
             with open("index.html", "w") as f:
                 f.write(html_output)
@@ -861,9 +793,8 @@ class KpMonitor:
         html_message : str
             Fully rendered HTML email body (see `render_html_message`)
         """
-        # root message as multipart/mixed: holds the inline body (multipart/related)
-        # plus any real, downloadable attachments (e.g. the aurora video) as siblings.
-        msg_root = MIMEMultipart("mixed")
+        # root message as multipart/related
+        msg_root = MIMEMultipart("related")
         msg_root["From"] = "pager"
         msg_root["Reply-To"] = "jhawar@gfz-potsdam.de"
 
@@ -873,11 +804,8 @@ class KpMonitor:
             msg_root["Bcc"] = ", ".join(recipients)
         msg_root["Subject"] = subject
 
-        msg_related = MIMEMultipart("related")
-        msg_root.attach(msg_related)
-
         msg_alternative = MIMEMultipart("alternative")
-        msg_related.attach(msg_alternative)
+        msg_root.attach(msg_alternative)
 
         plain_text = "Your email client does not support HTML."
         msg_alternative.attach(MIMEText(plain_text, "plain"))
@@ -887,29 +815,15 @@ class KpMonitor:
             img = MIMEImage(f.read())
             img.add_header("Content-ID", "<forecast_image>")
             img.add_header("Content-Disposition", "inline", filename="forecast_image.png")
-            msg_related.attach(img)
+            msg_root.attach(img)
 
-        include_aurora_video = "cid:aurora_vid" in html_message
-
-        aurora_path = "./aurora_forecast.gif"
-        if include_aurora_video and Path(aurora_path).exists():
+        aurora_path = "./aurora_LAST.png"
+        if "cid:aurora_image" in html_message and Path(aurora_path).exists():
             with open(aurora_path, "rb") as f:
                 aurora_img = MIMEImage(f.read())
-                aurora_img.add_header("Content-ID", "<aurora_vid>")
-                aurora_img.add_header("Content-Disposition", "inline", filename="aurora_forecast.gif")
-                msg_related.attach(aurora_img)
-
-        # Note: cid:-referenced <video><source> is not reliably resolved by mail clients
-        # (confirmed broken in Thunderbird even with a web-safe codec), so the video
-        # travels as a normal downloadable attachment instead of an inline part.
-        aurora_video_path = "./aurora_forecast.mp4"
-        if include_aurora_video and Path(aurora_video_path).exists():
-            with open(aurora_video_path, "rb") as f:
-                aurora_video = MIMEBase("video", "mp4")
-                aurora_video.set_payload(f.read())
-            encoders.encode_base64(aurora_video)
-            aurora_video.add_header("Content-Disposition", "attachment", filename="aurora_forecast.mp4")
-            msg_root.attach(aurora_video)
+                aurora_img.add_header("Content-ID", "<aurora_image>")
+                aurora_img.add_header("Content-Disposition", "inline", filename="aurora_LAST.png")
+                msg_root.attach(aurora_img)
 
         with smtplib.SMTP("localhost") as smtp:
             smtp.send_message(msg_root)
