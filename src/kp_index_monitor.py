@@ -567,7 +567,7 @@ class KpMonitor:
         storm_rows = []
         for idx, row in analysis["storm_prob_df"].iterrows():
             total_prob = row["prob 6-7"] + row["prob 7-8"] + row["prob >= 8"]
-            if total_prob > 0.50:
+            if total_prob >= 0.40:
                 storm_rows.append(
                     {
                         "time": idx.tz_convert(UTC).strftime("%d.%m.%Y %H:%M"),
